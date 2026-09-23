@@ -4,23 +4,27 @@ import { ClassSelectionLoginPage } from './components/ClassSelectionLoginPage';
 import { TodayTomorrowView } from './components/TodayTomorrowView';
 import { MentorCalendarView } from './components/MentorCalendarView';
 import {
-  fetchStudentSchedule,
-  getStoredClassId,
-  setStoredClassId,
+  fetchAllClassesAndSchedules,
+  fetchScheduleForSource,
+  getStoredClassSelection,
+  setStoredClassSelection,
 } from './services/scheduleApi';
-import type { StudentScheduleResponse } from './types/schedule';
+import type { ClassItem, ScheduleSource, StudentScheduleResponse } from './types/schedule';
 import { toIsoDateString } from './utils/dateUtils';
 import { Calendar, AlertTriangle, ChevronDown } from 'lucide-react';
 
 export function App() {
-  const [scheduleData, setScheduleData] = useState<StudentScheduleResponse | null>(null);
+  const storedSelection = getStoredClassSelection();
+  const [selectedClassId, setSelectedClassId] = useState<number | null>(() => storedSelection?.id ?? null);
+  const [selectedSource, setSelectedSource] = useState<ScheduleSource>(() => storedSelection?.source ?? 'school');
+
+  const [allClasses, setAllClasses] = useState<ClassItem[]>([]);
+  const [schoolData, setSchoolData] = useState<StudentScheduleResponse | null>(null);
+  const [higherSecondaryData, setHigherSecondaryData] = useState<StudentScheduleResponse | null>(null);
   const [cachedAt, setCachedAt] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Active class ID
-  const [selectedClassId, setSelectedClassId] = useState<number | null>(() => getStoredClassId());
-  
   // Page mode: 'login' (selection page with square card) or 'schedule' (Today and Tomorrow view)
   const [currentPage, setCurrentPage] = useState<'login' | 'schedule'>('login');
 
@@ -41,17 +45,33 @@ export function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Fetch schedule once on mount
-  const loadSchedule = async (forceRefresh = false) => {
+  // Fetch initial classes and schedules on mount
+  const loadInitialData = async (forceRefresh = false) => {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const result = await fetchStudentSchedule(forceRefresh);
-      setScheduleData(result.data);
-      setCachedAt(result.cachedAt);
+      const result = await fetchAllClassesAndSchedules(forceRefresh);
+      setAllClasses(result.classes);
 
-      if (!selectedClassId && result.data.classes.length > 0) {
-        setSelectedClassId(result.data.classes[0].id);
+      if (result.schoolResult) {
+        setSchoolData(result.schoolResult.data);
+        if (selectedSource === 'school') {
+          setCachedAt(result.schoolResult.cachedAt);
+        }
+      }
+
+      if (result.higherSecondaryResult) {
+        setHigherSecondaryData(result.higherSecondaryResult.data);
+        if (selectedSource === 'higher_secondary') {
+          setCachedAt(result.higherSecondaryResult.cachedAt);
+        }
+      }
+
+      // Default to first class if nothing selected
+      if (!selectedClassId && result.classes.length > 0) {
+        const first = result.classes[0];
+        setSelectedClassId(first.id);
+        setSelectedSource(first.source || 'school');
       }
     } catch (err: any) {
       setErrorMessage(err?.message || 'Unable to load schedule data.');
@@ -61,20 +81,63 @@ export function App() {
   };
 
   useEffect(() => {
-    loadSchedule(false);
+    loadInitialData(false);
   }, []);
 
+  // Manual refresh of the currently active schedule source
+  const handleRefresh = async () => {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const result = await fetchScheduleForSource(selectedSource, true);
+      if (selectedSource === 'higher_secondary') {
+        setHigherSecondaryData(result.data);
+      } else {
+        setSchoolData(result.data);
+      }
+      setCachedAt(result.cachedAt);
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Unable to refresh schedule.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // When user selects a class from the login page and continues
-  const handleSelectAndProceed = (id: number) => {
+  const handleSelectAndProceed = async (id: number, source: ScheduleSource = 'school') => {
     setSelectedClassId(id);
-    setStoredClassId(id);
+    setSelectedSource(source);
+    setStoredClassSelection(id, source);
     setCurrentPage('schedule');
+
+    const targetData = source === 'higher_secondary' ? higherSecondaryData : schoolData;
+    if (!targetData) {
+      setIsLoading(true);
+      try {
+        const result = await fetchScheduleForSource(source, false);
+        if (source === 'higher_secondary') {
+          setHigherSecondaryData(result.data);
+        } else {
+          setSchoolData(result.data);
+        }
+        setCachedAt(result.cachedAt);
+      } catch (err: any) {
+        setErrorMessage(err?.message || 'Unable to load schedule for selected class.');
+      } finally {
+        setIsLoading(false);
+      }
+    }
   };
 
   // Back to login/selection page
   const handleReturnToLogin = () => {
     setCurrentPage('login');
   };
+
+  // Active schedule data based on selected source
+  const activeScheduleData = useMemo(() => {
+    return selectedSource === 'higher_secondary' ? higherSecondaryData : schoolData;
+  }, [selectedSource, higherSecondaryData, schoolData]);
 
   // Dates
   const todayStr = useMemo(() => toIsoDateString(currentTime), [currentTime]);
@@ -84,11 +147,11 @@ export function App() {
     return toIsoDateString(tom);
   }, [currentTime]);
 
-  // ZERO-NETWORK FILTERING
+  // ZERO-NETWORK FILTERING FOR SELECTED CLASS
   const classSchedules = useMemo(() => {
-    if (!scheduleData || !selectedClassId) return [];
-    return scheduleData.schedules.filter((s) => s.class?.id === selectedClassId);
-  }, [scheduleData, selectedClassId]);
+    if (!activeScheduleData || !selectedClassId) return [];
+    return activeScheduleData.schedules.filter((s) => s.class?.id === selectedClassId);
+  }, [activeScheduleData, selectedClassId]);
 
   const todayItems = useMemo(() => {
     return classSchedules
@@ -114,9 +177,13 @@ export function App() {
   }, [classSchedules, todayStr]);
 
   const selectedClassObj = useMemo(() => {
-    if (!scheduleData || !selectedClassId) return null;
-    return scheduleData.classes.find((c) => c.id === selectedClassId) || null;
-  }, [scheduleData, selectedClassId]);
+    if (!selectedClassId) return null;
+    return (
+      allClasses.find((c) => c.id === selectedClassId && c.source === selectedSource) ||
+      allClasses.find((c) => c.id === selectedClassId) ||
+      null
+    );
+  }, [allClasses, selectedClassId, selectedSource]);
 
   const selectedClassName = selectedClassObj
     ? `${selectedClassObj.name} ${selectedClassObj.batch ? `(${selectedClassObj.batch})` : ''}`
@@ -127,8 +194,9 @@ export function App() {
     return (
       <div className="relative">
         <ClassSelectionLoginPage
-          classes={scheduleData?.classes || []}
+          classes={allClasses}
           selectedClassId={selectedClassId}
+          selectedSource={selectedSource}
           onSelectAndContinue={handleSelectAndProceed}
           isLoading={isLoading}
         />
@@ -143,7 +211,7 @@ export function App() {
       <Header
         cachedAt={cachedAt}
         isLoading={isLoading}
-        onRefresh={() => loadSchedule(true)}
+        onRefresh={handleRefresh}
         currentTime={currentTime}
         onChangeClass={handleReturnToLogin}
       />
@@ -158,7 +226,7 @@ export function App() {
               <span>{errorMessage}</span>
             </div>
             <button
-              onClick={() => loadSchedule(true)}
+              onClick={handleRefresh}
               className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-semibold cursor-pointer"
             >
               Retry
@@ -169,9 +237,16 @@ export function App() {
         {/* Selected Class Bar with Quick Switch */}
         <div className="bg-white rounded-2xl p-4 border border-slate-200/90 flex items-center justify-between shadow-sm">
           <div>
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">
-              Current Class
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                Current Class
+              </span>
+              {selectedSource === 'higher_secondary' && (
+                <span className="text-[10px] font-bold bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">
+                  Higher Secondary
+                </span>
+              )}
+            </div>
             <span className="text-base font-extrabold text-slate-900">
               {selectedClassName}
             </span>
@@ -237,4 +312,5 @@ export function App() {
     </div>
   );
 }
+
 export default App;

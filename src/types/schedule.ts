@@ -1,9 +1,12 @@
+export type ScheduleSource = 'school' | 'higher_secondary';
+
 export interface ClassItem {
   id: number;
   name: string;
   batch: string | null;
   academic_year: string | null;
   display_order: number;
+  source?: ScheduleSource;
 }
 
 export interface ScheduleItem {

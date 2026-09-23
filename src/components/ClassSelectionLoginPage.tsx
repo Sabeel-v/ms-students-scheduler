@@ -1,17 +1,20 @@
-import React, { useState, useRef, useEffect } from 'react';
-import type { ClassItem } from '../types/schedule';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import type { ClassItem, ScheduleSource } from '../types/schedule';
+import { isHigherSecondaryClassName } from '../services/scheduleApi';
 import { ChevronDown, Check } from 'lucide-react';
 
 interface ClassSelectionLoginPageProps {
   classes: ClassItem[];
   selectedClassId: number | null;
-  onSelectAndContinue: (id: number) => void;
+  selectedSource?: ScheduleSource;
+  onSelectAndContinue: (id: number, source?: ScheduleSource) => void;
   isLoading: boolean;
 }
 
 export const ClassSelectionLoginPage: React.FC<ClassSelectionLoginPageProps> = ({
   classes,
   selectedClassId,
+  selectedSource,
   onSelectAndContinue,
   isLoading,
 }) => {
@@ -29,7 +32,65 @@ export const ClassSelectionLoginPage: React.FC<ClassSelectionLoginPageProps> = (
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const selectedClass = classes.find((c) => c.id === selectedClassId) || null;
+  const selectedClass = useMemo(() => {
+    if (!selectedClassId) return null;
+    return (
+      classes.find(
+        (c) => c.id === selectedClassId && (!selectedSource || !c.source || c.source === selectedSource)
+      ) ||
+      classes.find((c) => c.id === selectedClassId) ||
+      null
+    );
+  }, [classes, selectedClassId, selectedSource]);
+
+  const schoolClasses = useMemo(() => {
+    return classes.filter(
+      (c) => c.source === 'school' || (!c.source && !isHigherSecondaryClassName(c.name))
+    );
+  }, [classes]);
+
+  const hsClasses = useMemo(() => {
+    return classes.filter(
+      (c) => c.source === 'higher_secondary' || (!c.source && isHigherSecondaryClassName(c.name))
+    );
+  }, [classes]);
+
+  const renderClassItem = (cls: ClassItem) => {
+    const isSelected =
+      cls.id === selectedClassId &&
+      (!selectedSource || !cls.source || cls.source === selectedSource);
+
+    return (
+      <button
+        key={`${cls.source || 'default'}-${cls.id}`}
+        type="button"
+        onClick={() => {
+          setIsDropdownOpen(false);
+          const resolvedSource: ScheduleSource =
+            cls.source || (isHigherSecondaryClassName(cls.name) ? 'higher_secondary' : 'school');
+          onSelectAndContinue(cls.id, resolvedSource);
+        }}
+        className={`w-full p-2.5 rounded-lg flex items-center justify-between text-left text-xs sm:text-sm font-medium transition-colors cursor-pointer ${
+          isSelected
+            ? 'bg-blue-50 text-blue-700 font-bold'
+            : 'hover:bg-slate-50 text-slate-700'
+        }`}
+      >
+        <div className="flex items-center gap-2 truncate">
+          <span
+            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+              isSelected ? 'bg-blue-600' : 'bg-slate-300'
+            }`}
+          />
+          <span className="truncate">
+            {cls.name} {cls.batch ? `(${cls.batch})` : ''}
+          </span>
+        </div>
+
+        {isSelected && <Check className="w-4 h-4 text-blue-600 shrink-0 ml-1.5" />}
+      </button>
+    );
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-slate-50 transition-colors duration-200">
@@ -56,12 +117,14 @@ export const ClassSelectionLoginPage: React.FC<ClassSelectionLoginPageProps> = (
           <button
             type="button"
             onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-            disabled={isLoading || classes.length === 0}
+            disabled={isLoading && classes.length === 0}
             className="w-full bg-white hover:bg-slate-50/80 border border-slate-200 hover:border-blue-500 rounded-xl px-4 py-3 sm:py-3.5 flex items-center justify-between text-left transition-all cursor-pointer disabled:opacity-50 shadow-sm"
           >
             <span className="text-sm font-semibold text-slate-800 truncate">
               {selectedClass
                 ? `${selectedClass.name} ${selectedClass.batch ? `(${selectedClass.batch})` : ''}`
+                : isLoading
+                ? 'Loading classes...'
                 : 'Select Class'}
             </span>
 
@@ -74,38 +137,37 @@ export const ClassSelectionLoginPage: React.FC<ClassSelectionLoginPageProps> = (
 
           {/* Dropdown Popover */}
           {isDropdownOpen && (
-            <div className="absolute left-1 right-1 bottom-full mb-2 z-50 bg-white border border-slate-200 rounded-xl shadow-2xl max-h-52 overflow-y-auto p-1.5 space-y-1 animate-fadeIn">
-              {classes.map((cls) => {
-                const isSelected = cls.id === selectedClassId;
-                return (
-                  <button
-                    key={cls.id}
-                    type="button"
-                    onClick={() => {
-                      setIsDropdownOpen(false);
-                      onSelectAndContinue(cls.id);
-                    }}
-                    className={`w-full p-2.5 rounded-lg flex items-center justify-between text-left text-xs sm:text-sm font-medium transition-colors cursor-pointer ${
-                      isSelected
-                        ? 'bg-blue-50 text-blue-700 font-bold'
-                        : 'hover:bg-slate-50 text-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full ${
-                          isSelected ? 'bg-blue-600' : 'bg-slate-300'
-                        }`}
-                      />
-                      <span>
-                        {cls.name} {cls.batch ? `(${cls.batch})` : ''}
-                      </span>
-                    </div>
+            <div className="absolute left-1 right-1 bottom-full mb-2 z-50 bg-white border border-slate-200 rounded-xl shadow-2xl max-h-60 overflow-y-auto p-1.5 space-y-2 animate-fadeIn">
+              {schoolClasses.length > 0 && (
+                <div>
+                  <div className="px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    School
+                  </div>
+                  <div className="space-y-0.5">
+                    {schoolClasses.map(renderClassItem)}
+                  </div>
+                </div>
+              )}
 
-                    {isSelected && <Check className="w-4 h-4 text-blue-600" />}
-                  </button>
-                );
-              })}
+              {hsClasses.length > 0 && (
+                <div className={schoolClasses.length > 0 ? 'pt-1.5 border-t border-slate-100' : ''}>
+                  <div className="px-2 py-1 text-[10px] font-bold text-blue-600 uppercase tracking-wider flex items-center justify-between">
+                    <span>Higher Secondary</span>
+                    <span className="text-[9px] bg-blue-50 text-blue-700 font-bold px-1.5 py-0.5 rounded">
+                      +1 / +2
+                    </span>
+                  </div>
+                  <div className="space-y-0.5">
+                    {hsClasses.map(renderClassItem)}
+                  </div>
+                </div>
+              )}
+
+              {classes.length === 0 && (
+                <div className="p-3 text-center text-xs text-slate-400">
+                  {isLoading ? 'Loading classes...' : 'No classes available'}
+                </div>
+              )}
             </div>
           )}
         </div>
